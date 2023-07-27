@@ -82,6 +82,95 @@
           lib.foldr lib.recursiveUpdate { } (lib.imap
             (_index: partition:
               lib.optionalAttrs (partition.content != null) (partition.content._meta dev)
+          fs-type = lib.mkOption {
+            type = lib.types.nullOr (lib.types.enum [ "bcachefs" "btrfs" "ext2" "ext3" "ext4" "fat16" "fat32" "hfs" "hfs+" "linux-swap" "ntfs" "reiserfs" "udf" "xfs" ]);
+            default = null;
+            description = "Filesystem type to use";
+          };
+          name = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            description = "Name of the partition";
+          };
+          start = lib.mkOption {
+            type = lib.types.str;
+            default = "0%";
+            description = "Start of the partition";
+          };
+          end = lib.mkOption {
+            type = lib.types.str;
+            default = "100%";
+            description = "End of the partition";
+          };
+          flags = lib.mkOption {
+            type = lib.types.listOf lib.types.str;
+            default = [ ];
+            description = "Partition flags";
+          };
+          bootable = lib.mkOption {
+            type = lib.types.bool;
+            default = false;
+            description = "Whether to make the partition bootable";
+          };
+          content = diskoLib.partitionType { parent = config; device = diskoLib.deviceNumbering config.device partition.config._index; };
+          _index = lib.mkOption {
+            internal = true;
+            default = lib.toInt (lib.head (builtins.match ".*entry ([[:digit:]]+)]" name));
+          };
+        };
+      }));
+      default = [ ];
+      description = "List of partitions to add to the partition table";
+    };
+    _parent = lib.mkOption {
+      internal = true;
+      default = parent;
+    };
+    _meta = lib.mkOption {
+      internal = true;
+      readOnly = true;
+      type = lib.types.functionTo diskoLib.jsonType;
+      default = dev:
+        lib.foldr lib.recursiveUpdate { } (lib.imap
+          (_index: partition:
+            lib.optionalAttrs (partition.content != null) (partition.content._meta dev)
+          )
+          config.partitions);
+      description = "Metadata";
+    };
+    _create = diskoLib.mkCreateOption {
+      inherit config options;
+      default = ''
+        parted -s ${config.device} -- mklabel ${config.format}
+        ${lib.concatStrings (map (partition: ''
+          ${lib.optionalString (config.format == "gpt") ''
+            parted -s ${config.device} -- mkpart ${partition.name} ${diskoLib.maybeStr partition.fs-type} ${partition.start} ${partition.end}
+          ''}
+          ${lib.optionalString (config.format == "msdos") ''
+            parted -s ${config.device} -- mkpart ${partition.part-type} ${diskoLib.maybeStr partition.fs-type} ${partition.start} ${partition.end}
+          ''}
+          # ensure /dev/disk/by-path/..-partN exists before continuing
+          udevadm trigger --subsystem-match=block
+          udevadm settle
+          ${lib.optionalString partition.bootable ''
+            parted -s ${config.device} -- set ${toString partition._index} boot on
+          ''}
+          ${lib.concatMapStringsSep "" (flag: ''
+            parted -s ${config.device} -- set ${toString partition._index} ${flag} on
+          '') partition.flags}
+          # ensure further operations can detect new partitions
+          udevadm trigger --subsystem-match=block
+          udevadm settle
+          ${lib.optionalString (partition.content != null) partition.content._create}
+        '') config.partitions)}
+      '';
+    };
+    _mount = diskoLib.mkMountOption {
+      inherit config options;
+      default =
+        let
+          partMounts = lib.foldr lib.recursiveUpdate { } (map
+            (partition:
+              lib.optionalAttrs (partition.content != null) partition.content._mount
             )
             config.partitions);
         description = "Metadata";
